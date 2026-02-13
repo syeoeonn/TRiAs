@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "trias"
-version = "0.1.0"
+version = "0.1.1"
 description = "Tandem repeat expansion analysis tools"
 readme = "README.md"
 requires-python = ">=3.9"
