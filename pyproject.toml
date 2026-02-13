@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "trias"
+version = "0.1.0"
+description = "Tandem repeat expansion analysis tools"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Seoyeon Kim", email = "syeoeonn@o.cnu.ac.kr" }]
+dependencies = [
+  "pysam>=0.22",
+  "tqdm>=4.0",
+  "pandas>=2.0"
+  # 필요하면 여기에 계속 추가(예: "scikit-learn", "pysam", "tqdm" 등)
+]
+
+[project.urls]
+Homepage = "https://example.com"       # 나중에 GitHub로 바꾸기
+Issues   = "https://example.com/issues"
+
+# 설치하면 'TRiAs'라는 명령이 생김 → TRiAs.cli 파일의 main 함수 실행
+[project.scripts]
+trias = "trias.cli:main"
+
+[tool.hatch.build.targets.wheel]
+# src 레이아웃을 사용 → 이 경로의 패키지를 휠에 담아라
+packages = ["src/trias"]
+
