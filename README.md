@@ -263,7 +263,6 @@ For example:
 ```text
 cat Unaffected.txt
 GRCh38
-CHM13
 HPRC
 Unaffected
 ```
