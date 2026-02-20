@@ -330,8 +330,8 @@ trias dntre \
 ### dnTRE Filtering Logic
 
 An expansion index (MC ratio) is calculated for every allele as:
-    $$(count_{case} - \overline{count}_{population}) / \overline{count}_{population}$$
-    
+
+$$(count_{case} - \overline{count}_{population}) / \overline{count}_{population}$$    
 
 An index of **1** denotes a two-fold expansion relative to controls  
 (i.e., the allele has twice the repeat count compared to the population mean baseline).
