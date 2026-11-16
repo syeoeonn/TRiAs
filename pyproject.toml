@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "trias"
-version = "0.1.1"
+dynamic = ["version"]                    # src/trias/__init__.py 의 __version__ 을 읽음
 description = "Tandem repeat expansion analysis tools"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -17,13 +17,20 @@ dependencies = [
   # 필요하면 여기에 계속 추가(예: "scikit-learn", "pysam", "tqdm" 등)
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
 [project.urls]
-Homepage = "https://example.com"       # 나중에 GitHub로 바꾸기
-Issues   = "https://example.com/issues"
+Homepage = "https://github.com/syeoeonn/TRiAs"
+Issues   = "https://github.com/syeoeonn/TRiAs/issues"
 
 # 설치하면 'TRiAs'라는 명령이 생김 → TRiAs.cli 파일의 main 함수 실행
 [project.scripts]
 trias = "trias.cli:main"
+
+[tool.hatch.version]
+# 버전 정의는 여기 한 곳뿐. 올릴 때 __init__.py 만 고치면 됨
+path = "src/trias/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 # src 레이아웃을 사용 → 이 경로의 패키지를 휠에 담아라

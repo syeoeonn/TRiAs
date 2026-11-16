@@ -361,7 +361,9 @@ def motif_summary(
 
 # ---------- CLI adapter ----------
 def motif_summary_cmd(args):
-    return motif_summary(
+    # Do not return the path: the console script does sys.exit(main()), and a
+    # string there is printed to stderr and turned into exit code 1.
+    motif_summary(
         input_path=args.input,
         output_path=args.output,
         group_files=args.groups or [],

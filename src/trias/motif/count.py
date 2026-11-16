@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from ..common.loci import allele_order_key
+
 log = logging.getLogger("trias")
 if not log.handlers:
     import sys as _sys
@@ -283,6 +285,7 @@ def process_group(args):
 
     rep_motif_dna = str(group_df["MOTIF"].iloc[0])
 
+    order_keys = []
     for idx, row in group_df.iterrows():
         if row["TR_allele"] != "." and rep_motif_dna not in (".", "nan"):
             comp_dna, total_dna, maxconsec_dna, stats_dna = compress_with_multi_motif_separated(
@@ -296,8 +299,14 @@ def process_group(args):
         group_df.at[idx, "TR_allele"] = comp_dna
         group_df.at[idx, "total_repeat_dna"] = total_dna_sep
         group_df.at[idx, "max_consec_dna"] = max_dna_sep
+        order_keys.append(allele_order_key(comp_dna, max_dna_sep, total_dna_sep))
 
-    return group_df
+    # vcf-alleles orders a locus by sequence length only, and breaks ties
+    # arbitrarily. Re-order with the shared key (length, then max_consec, then
+    # total_repeat, then compressed length); sorted() is stable, so rows that
+    # tie on everything keep their input order.
+    order = sorted(range(len(order_keys)), key=order_keys.__getitem__)
+    return group_df.iloc[order]
 
 def chunkify(lst, chunk_size):
     """Yield chunks of a list."""
@@ -309,7 +318,8 @@ def motif_count(
     input_path: str,
     output_path: str,
     max_workers: int = 100,
-    group_chunk_size: int = 8000
+    group_chunk_size: int = 8000,
+    force: bool = False
 ):
     """
     Count per-motif repeats from DNA-level TR alleles using multi-motif compression.
@@ -324,6 +334,17 @@ def motif_count(
 
     # Preserve original column order (keeps user-defined group columns)
     original_cols = list(df.columns)
+
+    # A table that already has these columns has had its TR_allele replaced by
+    # the compressed form, so running again would compress the compression. A
+    # merged mc table looks exactly like a freshly produced one, hence the guard.
+    already = [c for c in ("max_consec_dna", "total_repeat_dna") if c in original_cols]
+    if already and not force:
+        raise SystemExit(
+            f"{input_path} already has {', '.join(already)}, so motif-count has been run on it. "
+            "Running again would compress the alleles a second time. "
+            "Use --force only if you are sure the TR_allele column is still raw sequence."
+        )
 
     # Ensure result columns exist (if absent)
     for col in ["total_repeat_dna", "max_consec_dna"]:
@@ -382,5 +403,6 @@ def motif_count_cmd(args):
         input_path=args.input,
         output_path=args.output,
         max_workers=args.max_workers,
-        group_chunk_size=args.group_chunk_size
+        group_chunk_size=args.group_chunk_size,
+        force=getattr(args, "force", False)
     )

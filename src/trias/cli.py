@@ -1,10 +1,12 @@
 # src/trias/cli.py
 from __future__ import annotations
 import argparse
+from . import __version__
 from .bed.prepare import bed_prepare_cmd
 from .allele.extract import vcf_alleles_cmd
 from .motif.count import motif_count_cmd
 from .summary.motif_summary import motif_summary_cmd
+from .merge.merge_alleles import merge_alleles_cmd
 from .dntre.dntre import run_dntre as dntre_cmd, DEFAULT_FMT, default_jobs
 from .annotation.overlap_gene import annotate_cmd
 from .annotation.moi_annot import annotate_moi_cmd
@@ -17,6 +19,7 @@ def main():
         prog="trias",
         description="TRiAs: Tandem Repeat analysis toolkit"
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     # bed-prepare
@@ -52,6 +55,14 @@ def main():
     q.add_argument("--processes", type=int, default=32, help="Number of worker processes (default: 32)")
     q.add_argument("--chunk-size", type=int, default=10000, help="Number of intervals per chunk (default: 10000)")
     q.add_argument("--tmpdir", default="./tmp", help="Base temporary directory (default: ./tmp)")
+    q.add_argument(
+        "--no-manifest", action="store_true",
+        help=(
+            "Skip the <output>.manifest.json / .loci_status.tsv.gz sidecars. "
+            "They record the sample roster and which loci were skipped, which makes "
+            "a later merge-alleles exact; the output TSV is identical either way."
+        )
+    )
     q.set_defaults(func=vcf_alleles_cmd)
 
     # motif-count
@@ -63,7 +74,53 @@ def main():
     r.add_argument("--output", required=True, help="Output TSV path")
     r.add_argument("--max-workers", type=int, default=100, help="Max worker processes (default: 100)")
     r.add_argument("--group-chunk-size", type=int, default=8000, help="Number of groups per chunk (default: 8000)")
+    r.add_argument(
+        "--force", action="store_true",
+        help="Run even if the input already has motif-count columns (double compression)"
+    )
     r.set_defaults(func=motif_count_cmd)
+
+    # merge-alleles
+    m = sub.add_parser(
+        "merge-alleles",
+        help="Merge TR allele tables from separate vcf-alleles runs into one cohort"
+    )
+    m.add_argument("--base", required=True, help="Glob for the existing result, e.g. 'RESULT/TR_population_chr*.tsv'")
+    m.add_argument(
+        "--add", action="append", required=True, metavar="GLOB",
+        help="Glob for a result to merge in. Repeat to merge several runs at once."
+    )
+    m.add_argument("--outdir", required=True, help="Output directory; input basenames are kept")
+    m.add_argument(
+        "--fill-missing", choices=["ref", "none"], default="ref",
+        help=(
+            "A locus absent from a run means its VCF had no variant there. "
+            "'ref' (default) puts that run's samples on the locus reference allele; "
+            "'none' drops loci that are not present in every run."
+        )
+    )
+    m.add_argument(
+        "--backfill-mark", choices=["plain", "plus"], default="plain",
+        help=(
+            "How to write samples filled in as reference. 'plain' (default) matches what a "
+            "full re-run would emit; 'plus' writes +SAMPLE+ to flag them as assumed."
+        )
+    )
+    m.add_argument(
+        "--on-conflict", choices=["error", "base", "add"], default="error",
+        help=(
+            "When a sample has different alleles in two runs: 'error' (default) stops at the "
+            "first one, 'base' keeps the existing allele, 'add' takes the new one. "
+            "All three record every conflict in merge_conflicts.tsv."
+        )
+    )
+    m.add_argument(
+        "--require-disjoint-samples", action="store_true",
+        help="Fail if the runs share any sample name (other than the reference)"
+    )
+    m.add_argument("--jobs", type=int, default=None, help="Chromosomes to process at once (default: min(8, CPUs))")
+    m.add_argument("--report", default=None, help="Merge report path (default: <outdir>/merge_report.tsv)")
+    m.set_defaults(func=merge_alleles_cmd)
 
     # motif-summary
     s = sub.add_parser(
@@ -134,11 +191,13 @@ def main():
     p.add_argument("--regions", required=True, help="Input TSV (e.g., the output of 'trias annotate' with 'Ann_Genes' column).")
     p.add_argument("--mapping", required=True, help="Gene-to-MOI/disease mapping TSV. Header must include a gene column "
             "(gene|gene_symbol|symbol). MOI candidates: (moi|moi_title|mode_of_inheritance). "
-            "Disease candidates: (disease|diseases|phenotype|disorder|condition|omim_disease).")
+            "Disease candidates: (disease|diseases|phenotype|disorder|condition|omim_disease). "
+            "Optional OMIM candidates: (omim|mim|mim_number|omim_gene).")
     p.add_argument("--output", required=True, help="Output TSV path.")
     p.add_argument("--gene-col-candidates", default="Ann_Genes,Gene,Genes", help="Comma-separated candidate names to locate the gene column in --regions. ""Default: 'Ann_Genes,Gene,Genes'.")
     p.add_argument("--out-moi-col", default="Ann_MOI", help="Name of the output MOI column. Default: Ann_MOI")
     p.add_argument("--out-dis-col", default="Ann_Diseases", help="Name of the output disease column. Default: Ann_Diseases")
+    p.add_argument("--out-omim-col", default="Ann_OMIM", help="Name of the output OMIM column, written only when the mapping has an omim/mim/mim_number column. Default: Ann_OMIM")
     p.set_defaults(func=annotate_moi_cmd)
     
         # # mc-ratio

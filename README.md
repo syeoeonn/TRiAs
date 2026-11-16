@@ -12,6 +12,7 @@ TRiAs provides the following subcommands:
 - `bed-prepare`   : Prepare TR interval BED files
 - `vcf-alleles`   : Extract population TR alleles from VCF
 - `motif-count`   : Count motif repeats
+- `merge-alleles` : Merge allele tables from separate runs into one cohort
 - `motif-summary` : Summarize motif counts across groups
 - `dntre`         : Parallel *de novo* TRE caller
 
@@ -27,6 +28,12 @@ Show help:
 ```bash
 trias -h
 trias <subcommand> -h
+```
+
+Show version:
+
+```bash
+trias --version
 ```
 
 ---
@@ -117,6 +124,7 @@ trias vcf-alleles \
 - `--processes` (default: 32)
 - `--chunk-size` (default: 10000)
 - `--tmpdir` (default: ./tmp)
+- `--no-manifest` : Skip the `.manifest.json` / `.loci_status.tsv.gz` sidecars (see `merge-alleles`)
 
 ### Example Output 
 
@@ -170,6 +178,7 @@ trias motif-count \
 
 - `--max-workers` (default: 100)
 - `--group-chunk-size` (default: 8000)
+- `--force` : Run even if the input already has `max_consec_dna` / `total_repeat_dna` (refused by default to prevent double compression)
 
 ### Example Output 
 
@@ -198,9 +207,87 @@ For example:
     - `0_11` → motif1 count = 0, motif2 count = 11  
     - `6_6` → motif1 count = 6, motif2 count = 6 
 
+- Rows of each locus are ordered by allele length, then the largest `max_consec_dna`, the largest `total_repeat_dna`, and the compressed allele length (all ascending).
+
 ---
 
-## 4. motif-summary
+## 4. merge-alleles
+
+Merge allele tables from separate `vcf-alleles` runs into one cohort table.
+
+Instead of rebuilding the whole multi-sample VCF whenever samples are added, run `vcf-alleles` on the new VCF alone (single- or multi-sample) and merge its output into the existing result.  
+Both `vcf-alleles` and `motif-count` outputs can be merged; the level is detected from the header. Merging `_mc.tsv` files avoids recounting the existing cohort.
+
+⚠️ **All runs must share the same reference genome, `bed-prepare` output, and reference group.**  
+The reference allele of every shared locus is compared, and the merge stops on a mismatch.
+
+⚠️ **Re-run `motif-summary` on the merged table**, because `Population_*` statistics depend on the cohort.
+
+### Usage
+
+```bash
+trias merge-alleles \
+  --base 'MC_hg38/TR_population_chr*_mc.tsv' \
+  --add  'MC_NEW/TR_population_chr*_mc.tsv' \
+  --outdir MC_MERGED_hg38
+```
+
+Files are paired by the chromosome in their name, and outputs keep the base file name (`dntre` reads the chromosome from it).
+
+### Required arguments
+
+- `--base` : Glob for the existing result
+- `--add` : Glob for a result to merge in (repeatable)
+- `--outdir` : Output directory
+
+### Optional arguments
+
+- `--fill-missing` (default: ref) : For a locus absent from a run, `ref` places that run's samples on the reference allele; `none` drops the locus
+- `--backfill-mark` (default: plain) : `plus` writes filled-in samples as `+SAMPLE+`
+- `--on-conflict` (default: error) : When a sample has different alleles in two runs, `error` stops, `base` keeps the existing allele, `add` takes the new one
+- `--require-disjoint-samples` : Fail if two runs share a sample name
+- `--jobs` (default: min(8, CPUs))
+- `--report` (default: `<outdir>/merge_report.tsv`)
+
+### Example Output 
+
+Merging a two-sample cohort `NewCase` into an existing result (sample lists truncated).
+
+```text
+# base
+GRCh38  CHM13  HPRC  Unaffected  Affected  CHROM  START  END  MOTIF      TR_allele        max_consec_dna  total_repeat_dna  Samples
+0       0      1     0           0         chrM   454    563  CTCCCA,CA  TCCC(CTCCCA)2..  2_3             2_12              HG02723.2
+1       1      64    16          7         chrM   454    563  CTCCCA,CA  TCCC(CTCCCA)2..  2_4             2_13              GRCh38,CHM13,HG00438.2,...
+
+# add
+GRCh38  NewCase  CHROM  START  END  MOTIF      TR_allele        max_consec_dna  total_repeat_dna  Samples
+1       2        chrM   454    563  CTCCCA,CA  TCCC(CTCCCA)2..  2_4             2_13              GRCh38,NEW_001.2,NEW_002.2
+
+# merged
+GRCh38  CHM13  HPRC  Unaffected  Affected  NewCase  CHROM  START  END  MOTIF      TR_allele        max_consec_dna  total_repeat_dna  Samples
+0       0      1     0           0         0        chrM   454    563  CTCCCA,CA  TCCC(CTCCCA)2..  2_3             2_12              HG02723.2
+1       1      64    16          7         2        chrM   454    563  CTCCCA,CA  TCCC(CTCCCA)2..  2_4             2_13              GRCh38,CHM13,HG00438.2,...,NEW_001.2,NEW_002.2
+```
+
+→ `NewCase` is added as a new group column  
+→ `GRCh38` stays at 1 although it is in both runs (counts are recomputed from the union of samples)  
+→ every locus now covers 130 haplotypes instead of 126
+
+Two more files are written to `--outdir`:
+- `merge_report.tsv` : Per-chromosome counts of merged loci, filled-in loci and samples, new alleles, and conflicts
+- `merge_conflicts.tsv` : Each conflicting sample with its locus, group, both alleles, and the chosen side
+
+⚠️ **Notes**
+
+- **Missing loci** : `vcf-alleles` skips loci with no variant in the VCF, which means every sample is reference there (70.2% of loci in a real hg38 run). `--fill-missing ref` fills them back in so every locus covers every sample.
+- **`+SAMPLE+`** : If one run has a real call and the other only `+SAMPLE+`, the real call is used and it is not treated as a conflict.
+- **Row order** : Rows of a locus are ordered by allele length, then the largest `max_consec_dna`, the largest `total_repeat_dna`, and the compressed allele length (all ascending). Rows equal on all four keep the order in which runs were given. `motif-count` uses the same order.
+- **Manifests** : `vcf-alleles` also writes `TR_population_${CHROM}.manifest.json` and `.loci_status.tsv.gz` (sample roster and skipped loci). They are optional, and tables without them merge the same way.
+- **Do not run `motif-count` on a merged `_mc.tsv`.** Its alleles are already compressed, so the command refuses unless `--force` is given.
+
+---
+
+## 5. motif-summary
 
 Summarize motif repeat statistics per TR locus across population and custom-defined groups.
 
@@ -274,7 +361,7 @@ Similarly, `Our_*` columns are computed using the sample names provided in `Our.
 
 ---
 
-## 5. dntre
+## 6. dntre
 
 Parallel *de novo* tandem repeat expansion (dnTRE) caller.
 

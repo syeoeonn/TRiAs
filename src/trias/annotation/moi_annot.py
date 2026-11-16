@@ -27,13 +27,14 @@ def _normalize_gene_token(token: str) -> str:
 
 def _split_genes(cell: str) -> List[str]:
     """
-    Split a semicolon-joined gene list like "GENE1;GENE2(ENSG...);GENE3"
-    and normalize into plain symbols.
+    Split a gene list like "GENE1;GENE2(ENSG...);GENE3" and normalize into plain
+    symbols. Intergenic regions list both flanking genes joined by ':'
+    ("AGRN(ENSG...):RNF223(ENSG...)"), so ':' is a separator too.
     """
     if not cell or cell == ".":
         return []
-    parts = [p.strip() for p in cell.split(";") if p.strip()]
-    return [_normalize_gene_token(p) for p in parts if p]
+    parts = [p.strip() for chunk in cell.split(";") for p in chunk.split(":") if p.strip()]
+    return _dedup_order_preserving(_normalize_gene_token(p) for p in parts if p)
 
 
 def _find_col_index(header: List[str], candidates: Iterable[str]) -> Optional[int]:
@@ -66,7 +67,7 @@ def _dedup_order_preserving(items: Iterable[str]) -> List[str]:
 # Mapping loader
 # ----------------------------
 
-def load_moi_mapping(path: str) -> Dict[str, Dict[str, List[str]]]:
+def load_moi_mapping(path: str) -> Tuple[Dict[str, Dict[str, List[str]]], bool]:
     """
     Load a gene-to-MOI/disease mapping TSV.
 
@@ -74,10 +75,11 @@ def load_moi_mapping(path: str) -> Dict[str, Dict[str, List[str]]]:
       - Gene symbol column (candidates): gene, gene_symbol, symbol
       - MOI column (candidates): moi, moi_title, mode_of_inheritance
       - Disease column (candidates): disease, diseases, phenotype, disorder, condition, omim_disease
+      - OMIM gene number column, optional (candidates): omim, mim, mim_number, omim_gene
 
     Returns:
         mapping: dict keyed by UPPERCASE gene symbol ->
-                 {"moi": [moi strings...], "disease": [disease strings...]}
+                 {"moi": [...], "disease": [...], "omim": [...]}
     """
     mapping: Dict[str, Dict[str, List[str]]] = {}
     with open(path, newline="") as f:
@@ -89,6 +91,7 @@ def load_moi_mapping(path: str) -> Dict[str, Dict[str, List[str]]]:
         gene_idx = _find_col_index(header, ("gene", "gene_symbol", "symbol"))
         moi_idx = _find_col_index(header, ("moi", "moi_title", "mode_of_inheritance"))
         disease_idx = _find_col_index(header, ("disease", "diseases", "phenotype", "disorder", "condition", "omim_disease"))
+        omim_idx = _find_col_index(header, ("omim", "mim", "mim_number", "omim_gene"))
 
         if gene_idx is None:
             raise ValueError("Could not find a gene symbol column in the mapping file header.")
@@ -105,20 +108,23 @@ def load_moi_mapping(path: str) -> Dict[str, Dict[str, List[str]]]:
 
             moi_val = (row[moi_idx].strip() if (moi_idx is not None and moi_idx < len(row)) else "")
             dis_val = (row[disease_idx].strip() if (disease_idx is not None and disease_idx < len(row)) else "")
+            omim_val = (row[omim_idx].strip() if (omim_idx is not None and omim_idx < len(row)) else "")
 
             if gene_sym not in mapping:
-                mapping[gene_sym] = {"moi": [], "disease": []}
+                mapping[gene_sym] = {"moi": [], "disease": [], "omim": []}
             if moi_val:
                 mapping[gene_sym]["moi"].append(moi_val)
             if dis_val:
                 mapping[gene_sym]["disease"].append(dis_val)
+            if omim_val:
+                mapping[gene_sym]["omim"].append(omim_val)
 
     # Deduplicate lists
     for gene_sym, dd in mapping.items():
-        dd["moi"] = _dedup_order_preserving([x for x in dd["moi"] if x])
-        dd["disease"] = _dedup_order_preserving([x for x in dd["disease"] if x])
+        for k in ("moi", "disease", "omim"):
+            dd[k] = _dedup_order_preserving([x for x in dd[k] if x])
 
-    return mapping
+    return mapping, omim_idx is not None
 
 
 # ----------------------------
@@ -158,7 +164,7 @@ def write_table(path: str, rows: List[Row], header: Optional[Row]) -> None:
     Write a TSV table to the given path, including header if provided.
     """
     with open(path, "w", newline="") as f:
-        w = csv.writer(f, delimiter="\t")
+        w = csv.writer(f, delimiter="\t", lineterminator="\n")
         if header:
             w.writerow(header)
         w.writerows(rows)
@@ -168,6 +174,20 @@ def write_table(path: str, rows: List[Row], header: Optional[Row]) -> None:
 # Core annotation
 # ----------------------------
 
+def _per_gene(genes: List[str], mapping: Dict[str, Dict[str, List[str]]], field: str) -> str:
+    """
+    Label values with their gene so rows with several genes stay readable:
+    "AGRN:Autosomal dominant;RNF223:Autosomal recessive". Several values for one
+    gene are joined with '|'. Genes with no value are left out; '.' if none.
+    """
+    parts = []
+    for g in genes:
+        vals = mapping.get(g.upper(), {}).get(field, [])
+        if vals:
+            parts.append(f"{g}:{'|'.join(vals)}")
+    return ";".join(parts) if parts else "."
+
+
 def annotate_moi_rows(
     rows: List[Row],
     header: Optional[Row],
@@ -175,10 +195,12 @@ def annotate_moi_rows(
     gene_col_candidates: Tuple[str, ...] = ("Ann_Genes", "Gene", "Genes"),
     out_moi_col: str = "Ann_MOI",
     out_dis_col: str = "Ann_Diseases",
+    with_omim: bool = False,
+    out_omim_col: str = "Ann_OMIM",
 ) -> Tuple[List[Row], Optional[Row]]:
     """
-    For each row, read the gene column (semicolon-joined symbols),
-    map to MOI and disease(s), and append two new columns.
+    For each row, read the gene column, map each gene to MOI and disease(s),
+    and append the MOI and disease columns (plus an OMIM column if with_omim).
 
     Args:
         rows:    Input table rows (without header).
@@ -200,7 +222,7 @@ def annotate_moi_rows(
             raise ValueError(
                 f"Could not find a gene column among candidates: {', '.join(gene_col_candidates)}"
             )
-        out_header = list(header) + [out_moi_col, out_dis_col]
+        out_header = list(header) + [out_moi_col, out_dis_col] + ([out_omim_col] if with_omim else [])
 
     out_rows: List[Row] = []
     for row in rows:
@@ -219,19 +241,10 @@ def annotate_moi_rows(
                 genes_cell = row[gene_col_idx]
 
         genes = _split_genes(genes_cell)
-        moi_vals: List[str] = []
-        dis_vals: List[str] = []
-
-        for g in genes:
-            key = g.upper()
-            if key in mapping:
-                moi_vals.extend(mapping[key].get("moi", []))
-                dis_vals.extend(mapping[key].get("disease", []))
-
-        moi_joined = ";".join(_dedup_order_preserving([x for x in moi_vals if x])) if moi_vals else "."
-        dis_joined = ";".join(_dedup_order_preserving([x for x in dis_vals if x])) if dis_vals else "."
-
-        out_rows.append(list(row) + [moi_joined, dis_joined])
+        extra = [_per_gene(genes, mapping, "moi"), _per_gene(genes, mapping, "disease")]
+        if with_omim:
+            extra.append(_per_gene(genes, mapping, "omim"))
+        out_rows.append(list(row) + extra)
 
     return out_rows, out_header
 
@@ -243,18 +256,21 @@ def annotate_moi_paths(
     gene_col_candidates: Tuple[str, ...] = ("Ann_Genes", "Gene", "Genes"),
     out_moi_col: str = "Ann_MOI",
     out_dis_col: str = "Ann_Diseases",
+    out_omim_col: str = "Ann_OMIM",
 ) -> None:
     """
     Library entry point: annotate a regions table with MOI and disease columns
     by looking up gene symbols using a mapping TSV.
     """
     rows, header = read_table(regions_path)
-    mapping = load_moi_mapping(mapping_path)
+    mapping, with_omim = load_moi_mapping(mapping_path)
     out_rows, out_header = annotate_moi_rows(
         rows, header, mapping,
         gene_col_candidates=gene_col_candidates,
         out_moi_col=out_moi_col,
         out_dis_col=out_dis_col,
+        with_omim=with_omim,
+        out_omim_col=out_omim_col,
     )
     write_table(output_path, out_rows, out_header)
 
@@ -274,4 +290,5 @@ def annotate_moi_cmd(args) -> None:
         gene_col_candidates=tuple(args.gene_col_candidates.split(",")) if args.gene_col_candidates else ("Ann_Genes", "Gene", "Genes"),
         out_moi_col=args.out_moi_col,
         out_dis_col=args.out_dis_col,
+        out_omim_col=args.out_omim_col,
     )

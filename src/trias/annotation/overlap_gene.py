@@ -170,7 +170,7 @@ def write_output(output_path: str, rows: List[Row], regions_header: Optional[Row
     Output columns = original region columns + 4 new annotation columns.
     """
     with open(output_path, "w", newline="") as f:
-        w = csv.writer(f, delimiter='\t')
+        w = csv.writer(f, delimiter='\t', lineterminator='\n')
         if regions_header:
             header_out = list(regions_header) + ["Ann_Genes", "Ann_RegionTypes", "Ann_Strands", "Ann_Overlap_bps"]
             w.writerow(header_out)

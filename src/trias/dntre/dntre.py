@@ -11,6 +11,8 @@ import pandas as pd
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
 
+from ..common.loci import CHR_RE, chr_key, extract_chr_from_path
+
 DEFAULT_FMT = ".2f"
 
 # ---------- tiny utils ----------
@@ -83,15 +85,8 @@ def is_hap_token(sample_token: str) -> bool:
     t = str(sample_token).strip()
     return t.endswith(".1") or t.endswith(".2")
 
-def chr_key(chr_value: str) -> int:
-    v = str(chr_value).replace("chr", "").upper()
-    if v == "X": return 23
-    if v == "Y": return 24
-    if v in ("M", "MT"): return 25
-    try:
-        return int(v)
-    except Exception:
-        return 1000
+# chr_key, CHR_RE and extract_chr_from_path now live in trias.common.loci so
+# that merge-alleles can use them too; they are imported at the top of this file.
 
 # ---------- MC ratio ----------
 def mc_ratio_list(allele_vals: List[float], mean_vals: List[float], min_pop_mean=1.0) -> List[float]:
@@ -197,17 +192,6 @@ def collect_counts_for_sample_in_group(group_df: pd.DataFrame, sample_base: str)
     return True, total_str, max_str
 
 # ---------- chr parsing ----------
-CHR_RE = re.compile(r"(?:^|[^A-Za-z0-9])chr(?P<chr>[0-9]+|X|Y|M|MT)(?:[^A-Za-z0-9]|$)", re.IGNORECASE)
-
-def extract_chr_from_path(path: str) -> str:
-    m = CHR_RE.search(os.path.basename(path))
-    if not m:
-        return ""
-    raw = m.group("chr").upper()
-    if raw == "MT":
-        raw = "M"
-    return "chr" + raw
-
 def normalize_chr_value(val: str) -> str:
     if val is None:
         return ""
